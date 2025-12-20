@@ -3,9 +3,24 @@ import 'package:flutter/foundation.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 class ApiService {
-  // Emülatör kullanıyorsanız 10.0.2.2, gerçek cihaz için kendi yerel IP'niz
+  // Emülatör kullanıyorsanız 10.0.2.2, gerçek cihaz için IP adresiniz
   final String _baseUrl = 'http://10.0.2.2:8000';
-  final Dio _dio = Dio();
+
+  late final Dio _dio;
+
+  ApiService() {
+    // Dio yapılandırmasını burada yaparak Timeout hatalarının önüne geçiyoruz
+    _dio = Dio(
+      BaseOptions(
+        baseUrl: _baseUrl,
+        // Sunucuya bağlanma ve yanıt alma sürelerini 30 saniyeye çıkardık
+        connectTimeout: const Duration(minutes: 2),
+        receiveTimeout: const Duration(minutes: 5),
+        responseType: ResponseType.json,
+        contentType: "application/json",
+      ),
+    );
+  }
 
   /// Belirli bir otoparkın belirli bir süre sonraki doluluk tahminini getirir.
   Future<Map<String, dynamic>?> getPrediction(
@@ -22,14 +37,7 @@ class ApiService {
         "prediction_time": predictionTime.toIso8601String(),
       };
 
-      final response = await _dio.post(
-        '$_baseUrl/predict',
-        data: requestData,
-        options: Options(
-          responseType: ResponseType.json,
-          contentType: "application/json",
-        ),
-      );
+      final response = await _dio.post('/predict', data: requestData);
 
       if (response.statusCode == 200) {
         return response.data;
@@ -41,38 +49,47 @@ class ApiService {
     }
   }
 
-  /// 🚀 YENİ: Akıllı Öneri Sistemi
-  /// Kullanıcının gitmek istediği yere göre en mantıklı otoparkı getirir.
-  Future<Map<String, dynamic>?> getSmartRecommendation(LatLng target) async {
+  /// 🚀 AKILLI ÖNERİ SİSTEMİ
+  /// target: Haritada tıklanan varış noktası
+  /// user: Emülatördeki/Kullanıcının o anki sanal konumu
+  Future<Map<String, dynamic>?> getSmartRecommendation(
+    LatLng target,
+    LatLng user,
+  ) async {
     try {
       final requestData = {
         "target_lat": target.latitude,
         "target_lon": target.longitude,
-        "arrival_time": DateTime.now().toIso8601String(),
+        "user_lat": user.latitude,
+        "user_lon": user.longitude,
       };
 
-      final response = await _dio.post(
-        '$_baseUrl/recommend',
-        data: requestData,
-        options: Options(
-          responseType: ResponseType.json,
-          contentType: "application/json",
-        ),
-      );
+      debugPrint("API İsteği Gönderiliyor: $requestData");
+
+      // Not: Timeout süreleri BaseOptions içinde tanımlandığı için burada tekrar yazmaya gerek yoktur.
+      final response = await _dio.post('/recommend', data: requestData);
 
       if (response.statusCode == 200) {
-        // Bu data içinde 'recommended_park' ve 'all_candidates' listesi dönecek.
+        // FastAPI'den 'recommended_parking' ve 'all_parkings' döner
         return response.data;
       } else {
         debugPrint("Öneri Hatası Kodu: ${response.statusCode}");
         return null;
       }
     } on DioException catch (e) {
-      debugPrint("Bağlantı Hatası (Öneri): ${e.type} - ${e.message}");
-      // Sunucu kapalıysa veya IP yanlışsa buraya düşer.
+      if (e.type == DioExceptionType.connectionTimeout ||
+          e.type == DioExceptionType.receiveTimeout) {
+        debugPrint("Zaman Aşımı Hatası: Sunucu çok geç yanıt verdi.");
+      } else if (e.response != null) {
+        debugPrint(
+          "Sunucu Hatası (${e.response?.statusCode}): ${e.response?.data}",
+        );
+      } else {
+        debugPrint("Bağlantı Hatası: ${e.message}");
+      }
       return null;
     } catch (e) {
-      debugPrint("Beklenmedik Öneri Hatası: $e");
+      debugPrint("Beklenmedik Hata: $e");
       return null;
     }
   }

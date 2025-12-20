@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'api_service.dart';
 import 'dart:async';
+import 'dart:io';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -22,7 +24,7 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Akıllı Otopark',
+      title: 'Akıllı Otopark Asistanı',
       theme: ThemeData(primarySwatch: Colors.blue, useMaterial3: true),
       home: const MapScreen(),
     );
@@ -40,17 +42,18 @@ class _MapScreenState extends State<MapScreen> {
   final ApiService _apiService = ApiService();
 
   Set<Marker> _markers = {};
-  LatLng _initialTarget = const LatLng(38.7223, -9.1393);
+  // Lizbon merkez başlangıç noktası
+  final LatLng _initialTarget = const LatLng(38.7223, -9.1393);
   static const double _initialZoom = 14;
 
   Map<String, LatLng> _parkingLocations = {};
   StreamSubscription<QuerySnapshot>? _parkingSubscription;
 
-  // --- Yeni Eklenen Hafıza Değişkenleri ---
-  Map<String, dynamic>? _selectedParkData; // O an kartta gösterilen park
-  List<dynamic> _allCandidates = []; // API'den gelen tüm hesaplanmış parklar
+  // Hafıza Değişkenleri
+  Map<String, dynamic>? _selectedParkData;
+  List<dynamic> _allCandidates = [];
   bool _isLoadingRecommendation = false;
-  String? _recommendedParkId; // En iyi parkın ID'si (farklı renk için)
+  String? _recommendedParkId;
 
   @override
   void initState() {
@@ -64,13 +67,7 @@ class _MapScreenState extends State<MapScreen> {
     super.dispose();
   }
 
-  Future<void> _moveCameraToTarget(LatLng target) async {
-    if (_controller.isCompleted) {
-      final GoogleMapController controller = await _controller.future;
-      await controller.animateCamera(CameraUpdate.newLatLngZoom(target, 15));
-    }
-  }
-
+  // Firestore'dan otopark konumlarını canlı dinler
   void _listenToParkingData() {
     _parkingSubscription = FirebaseFirestore.instance
         .collection('otoparklar')
@@ -78,7 +75,7 @@ class _MapScreenState extends State<MapScreen> {
         .listen((snapshot) {
           final Map<String, LatLng> tempLocations = {};
           for (final doc in snapshot.docs) {
-            final data = doc.data();
+            final data = doc.data() as Map<String, dynamic>;
             if (data['latitude'] != null && data['longitude'] != null) {
               tempLocations[doc.id] = LatLng(
                 (data['latitude'] as num).toDouble(),
@@ -87,19 +84,19 @@ class _MapScreenState extends State<MapScreen> {
             }
           }
           setState(() => _parkingLocations = tempLocations);
-          _refreshMarkers(); // Sadece marker'ları çiz, tahminleri dokunmatik sakla
+          _refreshMarkers();
         });
   }
 
-  // --- Haritaya Tıklama: Yeni Öneri Al ---
+  // --- Haritaya Tıklama: Mevcut Konum + Hedef ile API'ye sorar ---
   void _onMapTap(LatLng position) async {
     setState(() {
       _isLoadingRecommendation = true;
-      _selectedParkData = null; // Eski kartı kapat
+      _selectedParkData = null;
       _recommendedParkId = null;
       _allCandidates = [];
 
-      // Hedef Marker'ı ekle
+      // Hedef Marker ekle
       _markers.removeWhere((m) => m.markerId.value == "destination");
       _markers.add(
         Marker(
@@ -113,7 +110,16 @@ class _MapScreenState extends State<MapScreen> {
       );
     });
 
-    final result = await _apiService.getSmartRecommendation(position);
+    // TEST: Emülatörde ayarladığın sanal Lizbon konumu (Senin başlangıç noktan)
+    // Gerçek GPS verisi için Geolocator paketi eklenebilir.
+    LatLng myCurrentLocation = const LatLng(38.7167, -9.1333);
+
+    // API'ye hem senin konumunu hem hedefi gönderiyoruz
+    final result = await _apiService.getSmartRecommendation(
+      position,
+      myCurrentLocation,
+    );
+    debugPrint("API'den Gelen Yanıt: $result");
 
     setState(() => _isLoadingRecommendation = false);
 
@@ -121,19 +127,24 @@ class _MapScreenState extends State<MapScreen> {
       setState(() {
         _allCandidates = result['all_parkings'] ?? [];
         _selectedParkData = result['recommended_parking'];
-        _recommendedParkId = _selectedParkData!['park_id'];
+        _recommendedParkId = _selectedParkData!['park_id'].toString();
       });
 
-      _refreshMarkers(); // Yeni verilere göre renkleri güncelle
+      _refreshMarkers();
       _showInfoSheet(_selectedParkData!);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("Öneri alınamadı. Lütfen API'yi kontrol edin."),
+        ),
+      );
     }
   }
 
-  // --- Marker'ları Yenileme (Renk Mantığı Burada) ---
+  // --- Marker'ları Yenileme (Önerilen Sarı, Diğerleri Mavi) ---
   void _refreshMarkers() {
     final Set<Marker> newMarkers = {};
 
-    // Varsa hedef marker'ı koru
     if (_markers.any((m) => m.markerId.value == "destination")) {
       newMarkers.add(
         _markers.firstWhere((m) => m.markerId.value == "destination"),
@@ -142,11 +153,10 @@ class _MapScreenState extends State<MapScreen> {
 
     for (final parkId in _parkingLocations.keys) {
       final LatLng pos = _parkingLocations[parkId]!;
-
-      // Renk Kararı: Önerilen mi?
       double hue = BitmapDescriptor.hueBlue;
-      if (parkId == _recommendedParkId) {
-        hue = BitmapDescriptor.hueYellow; // En iyi otopark altın rengi
+
+      if (parkId.toString() == _recommendedParkId) {
+        hue = BitmapDescriptor.hueYellow;
       }
 
       newMarkers.add(
@@ -154,18 +164,17 @@ class _MapScreenState extends State<MapScreen> {
           markerId: MarkerId(parkId),
           position: pos,
           icon: BitmapDescriptor.defaultMarkerWithHue(hue),
-          onTap: () => _onMarkerTap(parkId), // Marker'a basınca detay göster
+          onTap: () => _onMarkerTap(parkId),
         ),
       );
     }
     setState(() => _markers = newMarkers);
   }
 
-  // --- Marker'a Basınca Detay Göster ---
+  // --- Marker Tıklama ---
   void _onMarkerTap(String parkId) {
-    // API'den daha önce gelen hesaplanmış veriler içinde bu parkı bul
     final parkData = _allCandidates.firstWhere(
-      (p) => p['park_id'] == parkId,
+      (p) => p['park_id'].toString() == parkId.toString(),
       orElse: () => null,
     );
 
@@ -173,15 +182,33 @@ class _MapScreenState extends State<MapScreen> {
       setState(() => _selectedParkData = parkData);
       _showInfoSheet(parkData);
     } else {
-      // Eğer henüz /recommend çalışmadıysa veya veri yoksa standart bilgi
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Lütfen önce haritada bir hedef seçin.")),
       );
     }
   }
 
+  // --- Navigasyon Başlatma ---
+  Future<void> _launchNavigation(double targetLat, double targetLon) async {
+    // Google Haritalar'ı "Cihazın GPS konumu -> Otopark" rotasıyla açar
+    final String url =
+        "https://www.google.com/maps/dir/?api=1&destination=$targetLat,$targetLon&travelmode=driving";
+
+    final Uri uri = Uri.parse(url);
+    try {
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } else {
+        debugPrint("Haritalar başlatılamadı.");
+      }
+    } catch (e) {
+      debugPrint("Navigasyon hatası: $e");
+    }
+  }
+
+  // --- Alt Bilgi Paneli ---
   void _showInfoSheet(Map<String, dynamic> park) {
-    bool isBest = park['park_id'] == _recommendedParkId;
+    bool isBest = park['park_id'].toString() == _recommendedParkId;
 
     showModalBottomSheet(
       context: context,
@@ -205,7 +232,7 @@ class _MapScreenState extends State<MapScreen> {
                 const SizedBox(width: 10),
                 Text(
                   isBest
-                      ? "Yapay Zeka Önerisi: ${park['park_id']}"
+                      ? "En İyi Öneri: ${park['park_id']}"
                       : "Otopark: ${park['park_id']}",
                   style: const TextStyle(
                     fontSize: 18,
@@ -216,30 +243,34 @@ class _MapScreenState extends State<MapScreen> {
             ),
             const Divider(),
             _infoRow(
-              Icons.timer,
-              "Tahmini Varış",
+              Icons.drive_eta,
+              "Sürüş Süresi",
               "${park['duration_min']} dk",
             ),
             _infoRow(
-              Icons.directions_car,
-              "Uzaklık",
-              "${park['distance_km']} km",
+              Icons.directions_walk,
+              "Yürüme (Hedeften)",
+              "${park['walk_min'] ?? '?'} dk",
             ),
             _infoRow(
               Icons.pie_chart,
-              "Doluluk Oranı",
+              "Varışta Tahmini Doluluk",
               "%${(park['occupancy_ratio'] * 100).toInt()}",
             ),
             const SizedBox(height: 20),
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
-                onPressed: () => Navigator.pop(context),
+                onPressed: () {
+                  Navigator.pop(context);
+                  _launchNavigation(park['latitude'], park['longitude']);
+                },
                 icon: const Icon(Icons.navigation),
                 label: const Text("Navigasyonu Başlat"),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.blue,
                   foregroundColor: Colors.white,
+                  padding: const EdgeInsets.all(15),
                 ),
               ),
             ),
@@ -280,6 +311,8 @@ class _MapScreenState extends State<MapScreen> {
             markers: _markers,
             onTap: _onMapTap,
             onMapCreated: (controller) => _controller.complete(controller),
+            myLocationEnabled: true,
+            myLocationButtonEnabled: true,
           ),
           if (_isLoadingRecommendation)
             const Center(child: CircularProgressIndicator(strokeWidth: 5)),
