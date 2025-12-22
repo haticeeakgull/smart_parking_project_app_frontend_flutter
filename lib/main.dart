@@ -2,8 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'api_service.dart';
 import 'dart:async';
-import 'dart:io';
-
 import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -13,7 +11,7 @@ void main() async {
   try {
     await Firebase.initializeApp();
   } catch (e) {
-    debugPrint("FATAL ERROR: Firebase başlangıcı başarısız: $e");
+    debugPrint("Firebase Hatası: $e");
   }
   runApp(const MyApp());
 }
@@ -24,8 +22,11 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Akıllı Otopark Asistanı',
-      theme: ThemeData(primarySwatch: Colors.blue, useMaterial3: true),
+      theme: ThemeData(
+        primarySwatch: Colors.blue,
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
+      ),
       home: const MapScreen(),
     );
   }
@@ -42,18 +43,15 @@ class _MapScreenState extends State<MapScreen> {
   final ApiService _apiService = ApiService();
 
   Set<Marker> _markers = {};
-  // Lizbon merkez başlangıç noktası
-  final LatLng _initialTarget = const LatLng(38.7223, -9.1393);
-  static const double _initialZoom = 14;
-
   Map<String, LatLng> _parkingLocations = {};
-  StreamSubscription<QuerySnapshot>? _parkingSubscription;
+  List<dynamic> _allCandidates = []; // API'den gelen tüm otoparkların listesi
+  bool _isLoading = false;
 
-  // Hafıza Değişkenleri
-  Map<String, dynamic>? _selectedParkData;
-  List<dynamic> _allCandidates = [];
-  bool _isLoadingRecommendation = false;
-  String? _recommendedParkId;
+  bool _isNavigationMode = false;
+  Map<String, dynamic>? _selectedPark; // O an kartta detayları gösterilen park
+  String? _recommendedParkId; // API'nin "en iyi" dediği parkın ID'si
+
+  final LatLng _initialTarget = const LatLng(38.7223, -9.1393);
 
   @override
   void initState() {
@@ -61,42 +59,106 @@ class _MapScreenState extends State<MapScreen> {
     _listenToParkingData();
   }
 
-  @override
-  void dispose() {
-    _parkingSubscription?.cancel();
-    super.dispose();
-  }
-
-  // Firestore'dan otopark konumlarını canlı dinler
   void _listenToParkingData() {
-    _parkingSubscription = FirebaseFirestore.instance
-        .collection('otoparklar')
-        .snapshots()
-        .listen((snapshot) {
-          final Map<String, LatLng> tempLocations = {};
-          for (final doc in snapshot.docs) {
-            final data = doc.data() as Map<String, dynamic>;
-            if (data['latitude'] != null && data['longitude'] != null) {
-              tempLocations[doc.id] = LatLng(
-                (data['latitude'] as num).toDouble(),
-                (data['longitude'] as num).toDouble(),
-              );
-            }
-          }
-          setState(() => _parkingLocations = tempLocations);
-          _refreshMarkers();
-        });
+    FirebaseFirestore.instance.collection('otoparklar').snapshots().listen((
+      snapshot,
+    ) {
+      final Map<String, LatLng> temp = {};
+      for (var doc in snapshot.docs) {
+        final data = doc.data();
+        temp[doc.id] = LatLng(data['latitude'], data['longitude']);
+      }
+      setState(() => _parkingLocations = temp);
+      _refreshMarkers();
+    });
   }
 
-  // --- Haritaya Tıklama: Mevcut Konum + Hedef ile API'ye sorar ---
-  void _onMapTap(LatLng position) async {
+  // Kullanıcı herhangi bir otopark marker'ına tıkladığında
+  void _onMarkerTap(String parkId) {
+    // Eğer henüz bir hedef seçilmemişse allCandidates boştur, işlem yapma
+    if (_allCandidates.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("Lütfen önce haritadan bir varış noktası seçin."),
+        ),
+      );
+      return;
+    }
+
+    // Tıklanan ID'ye sahip otoparkı API listesinden bul
+    final clickedPark = _allCandidates.firstWhere(
+      (p) => p['park_id'].toString() == parkId,
+      orElse: () => null,
+    );
+
+    if (clickedPark != null) {
+      setState(() {
+        _selectedPark = clickedPark;
+        _isNavigationMode = true; // Kartı göster/güncelle
+      });
+      _refreshMarkers(); // Seçili marker rengini yeşil yapmak için yenile
+      _moveCamera(
+        LatLng(clickedPark['latitude'], clickedPark['longitude']),
+        15,
+      );
+    }
+  }
+
+  void _backToMainMap() {
     setState(() {
-      _isLoadingRecommendation = true;
-      _selectedParkData = null;
+      _isNavigationMode = false;
+      _selectedPark = null;
       _recommendedParkId = null;
       _allCandidates = [];
+      _markers.removeWhere((m) => m.markerId.value == "destination");
+    });
+    _refreshMarkers();
+    _moveCamera(_initialTarget, 14);
+  }
 
-      // Hedef Marker ekle
+  void _refreshMarkers() {
+    final Set<Marker> newMarkers = {};
+
+    // Hedef marker'ını (mavi damla) koru
+    if (_markers.any((m) => m.markerId.value == "destination")) {
+      newMarkers.add(
+        _markers.firstWhere((m) => m.markerId.value == "destination"),
+      );
+    }
+
+    _parkingLocations.forEach((id, pos) {
+      double hue = BitmapDescriptor.hueBlue; // Varsayılan: Mavi
+
+      // Eğer bu park API'nin önerdiği EN İYİ park ise: SARI
+      if (id == _recommendedParkId) {
+        hue = BitmapDescriptor.hueYellow;
+      }
+
+      // Eğer kullanıcı şu an bu otoparkın kartına bakıyorsa: YEŞİL
+      if (_selectedPark != null && id == _selectedPark!['park_id'].toString()) {
+        hue = BitmapDescriptor.hueGreen;
+      }
+
+      newMarkers.add(
+        Marker(
+          markerId: MarkerId(id),
+          position: pos,
+          icon: BitmapDescriptor.defaultMarkerWithHue(hue),
+          onTap: () => _onMarkerTap(id), // Tıklama olayını bağla
+        ),
+      );
+    });
+    setState(() => _markers = newMarkers);
+  }
+
+  Future<void> _moveCamera(LatLng pos, double zoom) async {
+    final controller = await _controller.future;
+    controller.animateCamera(CameraUpdate.newLatLngZoom(pos, zoom));
+  }
+
+  void _onMapTap(LatLng position) async {
+    setState(() {
+      _isLoading = true;
       _markers.removeWhere((m) => m.markerId.value == "destination");
       _markers.add(
         Marker(
@@ -105,219 +167,167 @@ class _MapScreenState extends State<MapScreen> {
           icon: BitmapDescriptor.defaultMarkerWithHue(
             BitmapDescriptor.hueAzure,
           ),
-          infoWindow: const InfoWindow(title: "Hedefiniz"),
         ),
       );
     });
 
-    // TEST: Emülatörde ayarladığın sanal Lizbon konumu (Senin başlangıç noktan)
-    // Gerçek GPS verisi için Geolocator paketi eklenebilir.
-    LatLng myCurrentLocation = const LatLng(38.7167, -9.1333);
-
-    // API'ye hem senin konumunu hem hedefi gönderiyoruz
     final result = await _apiService.getSmartRecommendation(
       position,
-      myCurrentLocation,
+      const LatLng(38.7167, -9.1333),
     );
-    debugPrint("API'den Gelen Yanıt: $result");
 
-    setState(() => _isLoadingRecommendation = false);
+    setState(() => _isLoading = false);
 
-    if (result != null && result['recommended_parking'] != null) {
+    if (result != null) {
       setState(() {
-        _allCandidates = result['all_parkings'] ?? [];
-        _selectedParkData = result['recommended_parking'];
-        _recommendedParkId = _selectedParkData!['park_id'].toString();
+        _allCandidates =
+            result['all_parkings'] ?? []; // Tüm alternatifleri listeye al
+        _selectedPark =
+            result['recommended_parking']; // Varsayılan olarak en iyiyi seç
+        _recommendedParkId = _selectedPark!['park_id'].toString();
+        _isNavigationMode = true;
       });
-
       _refreshMarkers();
-      _showInfoSheet(_selectedParkData!);
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text("Öneri alınamadı. Lütfen API'yi kontrol edin."),
-        ),
+      _moveCamera(
+        LatLng(_selectedPark!['latitude'], _selectedPark!['longitude']),
+        15,
       );
     }
-  }
-
-  // --- Marker'ları Yenileme (Önerilen Sarı, Diğerleri Mavi) ---
-  void _refreshMarkers() {
-    final Set<Marker> newMarkers = {};
-
-    if (_markers.any((m) => m.markerId.value == "destination")) {
-      newMarkers.add(
-        _markers.firstWhere((m) => m.markerId.value == "destination"),
-      );
-    }
-
-    for (final parkId in _parkingLocations.keys) {
-      final LatLng pos = _parkingLocations[parkId]!;
-      double hue = BitmapDescriptor.hueBlue;
-
-      if (parkId.toString() == _recommendedParkId) {
-        hue = BitmapDescriptor.hueYellow;
-      }
-
-      newMarkers.add(
-        Marker(
-          markerId: MarkerId(parkId),
-          position: pos,
-          icon: BitmapDescriptor.defaultMarkerWithHue(hue),
-          onTap: () => _onMarkerTap(parkId),
-        ),
-      );
-    }
-    setState(() => _markers = newMarkers);
-  }
-
-  // --- Marker Tıklama ---
-  void _onMarkerTap(String parkId) {
-    final parkData = _allCandidates.firstWhere(
-      (p) => p['park_id'].toString() == parkId.toString(),
-      orElse: () => null,
-    );
-
-    if (parkData != null) {
-      setState(() => _selectedParkData = parkData);
-      _showInfoSheet(parkData);
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Lütfen önce haritada bir hedef seçin.")),
-      );
-    }
-  }
-
-  // --- Navigasyon Başlatma ---
-  Future<void> _launchNavigation(double targetLat, double targetLon) async {
-    // Google Haritalar'ı "Cihazın GPS konumu -> Otopark" rotasıyla açar
-    final String url =
-        "https://www.google.com/maps/dir/?api=1&destination=$targetLat,$targetLon&travelmode=driving";
-
-    final Uri uri = Uri.parse(url);
-    try {
-      if (await canLaunchUrl(uri)) {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-      } else {
-        debugPrint("Haritalar başlatılamadı.");
-      }
-    } catch (e) {
-      debugPrint("Navigasyon hatası: $e");
-    }
-  }
-
-  // --- Alt Bilgi Paneli ---
-  void _showInfoSheet(Map<String, dynamic> park) {
-    bool isBest = park['park_id'].toString() == _recommendedParkId;
-
-    showModalBottomSheet(
-      context: context,
-      barrierColor: Colors.black12,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (context) => Container(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(
-                  isBest ? Icons.stars : Icons.local_parking,
-                  color: isBest ? Colors.orange : Colors.blue,
-                  size: 30,
-                ),
-                const SizedBox(width: 10),
-                Text(
-                  isBest
-                      ? "En İyi Öneri: ${park['park_id']}"
-                      : "Otopark: ${park['park_id']}",
-                  style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ],
-            ),
-            const Divider(),
-            _infoRow(
-              Icons.drive_eta,
-              "Sürüş Süresi",
-              "${park['duration_min']} dk",
-            ),
-            _infoRow(
-              Icons.directions_walk,
-              "Yürüme (Hedeften)",
-              "${park['walk_min'] ?? '?'} dk",
-            ),
-            _infoRow(
-              Icons.pie_chart,
-              "Varışta Tahmini Doluluk",
-              "%${(park['occupancy_ratio'] * 100).toInt()}",
-            ),
-            const SizedBox(height: 20),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: () {
-                  Navigator.pop(context);
-                  _launchNavigation(park['latitude'], park['longitude']);
-                },
-                icon: const Icon(Icons.navigation),
-                label: const Text("Navigasyonu Başlat"),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blue,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.all(15),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _infoRow(IconData icon, String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        children: [
-          Icon(icon, size: 20, color: Colors.grey),
-          const SizedBox(width: 8),
-          Text("$label: "),
-          Text(value, style: const TextStyle(fontWeight: FontWeight.bold)),
-        ],
-      ),
-    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Akıllı Otopark Asistanı"),
-        centerTitle: true,
+        title: Text(
+          _isNavigationMode ? "Otopark Seçimi" : "Akıllı Otopark Asistanı",
+        ),
+        leading: _isNavigationMode
+            ? IconButton(
+                icon: const Icon(Icons.close),
+                onPressed: _backToMainMap,
+              )
+            : const Icon(Icons.map),
+        backgroundColor: Colors.white,
       ),
       body: Stack(
         children: [
           GoogleMap(
             initialCameraPosition: CameraPosition(
               target: _initialTarget,
-              zoom: _initialZoom,
+              zoom: 14,
             ),
             markers: _markers,
             onTap: _onMapTap,
-            onMapCreated: (controller) => _controller.complete(controller),
-            myLocationEnabled: true,
-            myLocationButtonEnabled: true,
+            onMapCreated: (c) => _controller.complete(c),
+            zoomControlsEnabled: false,
           ),
-          if (_isLoadingRecommendation)
-            const Center(child: CircularProgressIndicator(strokeWidth: 5)),
+
+          if (_selectedPark != null)
+            Positioned(
+              bottom: 20,
+              left: 15,
+              right: 15,
+              child: Card(
+                elevation: 10,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            "Otopark: ${_selectedPark!['park_id']}",
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          // Eğer en iyi öneriyse bir etiket göster
+                          if (_selectedPark!['park_id'].toString() ==
+                              _recommendedParkId)
+                            const Chip(
+                              label: Text(
+                                "En İyi Öneri",
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 12,
+                                ),
+                              ),
+                              backgroundColor: Colors.orange,
+                            ),
+                        ],
+                      ),
+                      const Divider(),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceAround,
+                        children: [
+                          _statIcon(
+                            Icons.drive_eta,
+                            "${_selectedPark!['duration_min']} dk",
+                          ),
+                          _statIcon(
+                            Icons.directions_walk,
+                            "${_selectedPark!['walk_min']} dk",
+                          ),
+                          _statIcon(
+                            Icons.pie_chart,
+                            "%${(_selectedPark!['occupancy_ratio'] * 100).toInt()}",
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 20),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: _backToMainMap,
+                              child: const Text("Temizle"),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: ElevatedButton.icon(
+                              onPressed: () => _launchExternalMap(),
+                              icon: const Icon(Icons.navigation),
+                              label: const Text("Navigasyon"),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.blue,
+                                foregroundColor: Colors.white,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+
+          if (_isLoading) const Center(child: CircularProgressIndicator()),
         ],
       ),
     );
+  }
+
+  Widget _statIcon(IconData icon, String text) => Column(
+    children: [
+      Icon(icon, color: Colors.blue),
+      const SizedBox(height: 4),
+      Text(text, style: const TextStyle(fontWeight: FontWeight.bold)),
+    ],
+  );
+
+  void _launchExternalMap() async {
+    final lat = _selectedPark!['latitude'];
+    final lon = _selectedPark!['longitude'];
+    final url = Uri.parse("google.navigation:q=$lat,$lon&mode=d");
+    if (await canLaunchUrl(url)) await launchUrl(url);
   }
 }
