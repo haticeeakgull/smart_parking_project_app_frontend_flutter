@@ -44,14 +44,17 @@ class _MapScreenState extends State<MapScreen> {
 
   Set<Marker> _markers = {};
   Map<String, LatLng> _parkingLocations = {};
-  List<dynamic> _allCandidates = []; // API'den gelen tüm otoparkların listesi
+  List<dynamic> _allCandidates = [];
   bool _isLoading = false;
 
   bool _isNavigationMode = false;
-  Map<String, dynamic>? _selectedPark; // O an kartta detayları gösterilen park
-  String? _recommendedParkId; // API'nin "en iyi" dediği parkın ID'si
+  Map<String, dynamic>? _selectedPark;
+  String? _recommendedParkId;
 
-  final LatLng _initialTarget = const LatLng(38.7223, -9.1393);
+  // Yeni Eklenen: Kullanıcının tercih ettiği yürüme süresi
+  int _maxWalkTime = 10;
+
+  final LatLng _initialTarget = const LatLng(38.729062, -9.145312);
 
   @override
   void initState() {
@@ -73,9 +76,7 @@ class _MapScreenState extends State<MapScreen> {
     });
   }
 
-  // Kullanıcı herhangi bir otopark marker'ına tıkladığında
   void _onMarkerTap(String parkId) {
-    // Eğer henüz bir hedef seçilmemişse allCandidates boştur, işlem yapma
     if (_allCandidates.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -85,7 +86,6 @@ class _MapScreenState extends State<MapScreen> {
       return;
     }
 
-    // Tıklanan ID'ye sahip otoparkı API listesinden bul
     final clickedPark = _allCandidates.firstWhere(
       (p) => p['park_id'].toString() == parkId,
       orElse: () => null,
@@ -94,9 +94,9 @@ class _MapScreenState extends State<MapScreen> {
     if (clickedPark != null) {
       setState(() {
         _selectedPark = clickedPark;
-        _isNavigationMode = true; // Kartı göster/güncelle
+        _isNavigationMode = true;
       });
-      _refreshMarkers(); // Seçili marker rengini yeşil yapmak için yenile
+      _refreshMarkers();
       _moveCamera(
         LatLng(clickedPark['latitude'], clickedPark['longitude']),
         15,
@@ -119,7 +119,6 @@ class _MapScreenState extends State<MapScreen> {
   void _refreshMarkers() {
     final Set<Marker> newMarkers = {};
 
-    // Hedef marker'ını (mavi damla) koru
     if (_markers.any((m) => m.markerId.value == "destination")) {
       newMarkers.add(
         _markers.firstWhere((m) => m.markerId.value == "destination"),
@@ -127,14 +126,12 @@ class _MapScreenState extends State<MapScreen> {
     }
 
     _parkingLocations.forEach((id, pos) {
-      double hue = BitmapDescriptor.hueBlue; // Varsayılan: Mavi
+      double hue = BitmapDescriptor.hueBlue;
 
-      // Eğer bu park API'nin önerdiği EN İYİ park ise: SARI
       if (id == _recommendedParkId) {
         hue = BitmapDescriptor.hueYellow;
       }
 
-      // Eğer kullanıcı şu an bu otoparkın kartına bakıyorsa: YEŞİL
       if (_selectedPark != null && id == _selectedPark!['park_id'].toString()) {
         hue = BitmapDescriptor.hueGreen;
       }
@@ -144,7 +141,7 @@ class _MapScreenState extends State<MapScreen> {
           markerId: MarkerId(id),
           position: pos,
           icon: BitmapDescriptor.defaultMarkerWithHue(hue),
-          onTap: () => _onMarkerTap(id), // Tıklama olayını bağla
+          onTap: () => _onMarkerTap(id),
         ),
       );
     });
@@ -159,31 +156,21 @@ class _MapScreenState extends State<MapScreen> {
   void _onMapTap(LatLng position) async {
     setState(() {
       _isLoading = true;
-      _markers.removeWhere((m) => m.markerId.value == "destination");
-      _markers.add(
-        Marker(
-          markerId: const MarkerId("destination"),
-          position: position,
-          icon: BitmapDescriptor.defaultMarkerWithHue(
-            BitmapDescriptor.hueAzure,
-          ),
-        ),
-      );
     });
 
+    // API'ye yürüme sınırını gönderiyoruz
     final result = await _apiService.getSmartRecommendation(
       position,
-      const LatLng(38.7167, -9.1333),
+      const LatLng(38.722282, -9.135389), // Kendi konumun
+      _maxWalkTime,
     );
 
     setState(() => _isLoading = false);
 
-    if (result != null) {
+    if (result != null && result['recommended_parking'] != null) {
       setState(() {
-        _allCandidates =
-            result['all_parkings'] ?? []; // Tüm alternatifleri listeye al
-        _selectedPark =
-            result['recommended_parking']; // Varsayılan olarak en iyiyi seç
+        _allCandidates = result['all_parkings'];
+        _selectedPark = result['recommended_parking'];
         _recommendedParkId = _selectedPark!['park_id'].toString();
         _isNavigationMode = true;
       });
@@ -191,6 +178,14 @@ class _MapScreenState extends State<MapScreen> {
       _moveCamera(
         LatLng(_selectedPark!['latitude'], _selectedPark!['longitude']),
         15,
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            "Sunucudan veri alınamadı, lütfen internetinizi kontrol edin.",
+          ),
+        ),
       );
     }
   }
@@ -223,6 +218,54 @@ class _MapScreenState extends State<MapScreen> {
             zoomControlsEnabled: false,
           ),
 
+          // YENİ EKLENEN: Maksimum Yürüme Süresi Sürgüsü (Slider)
+          Positioned(
+            top: 15,
+            left: 15,
+            right: 15,
+            child: Card(
+              elevation: 4,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(15),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 8,
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.directions_walk, color: Colors.blue),
+                    const SizedBox(width: 8),
+                    const Text(
+                      "Max:",
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    Expanded(
+                      child: Slider(
+                        value: _maxWalkTime.toDouble(),
+                        min: 2,
+                        max: 20,
+                        divisions: 9,
+                        label: "$_maxWalkTime dk",
+                        onChanged: (value) {
+                          setState(() => _maxWalkTime = value.toInt());
+                        },
+                      ),
+                    ),
+                    Text(
+                      "$_maxWalkTime dk",
+                      style: const TextStyle(
+                        color: Colors.blue,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+
           if (_selectedPark != null)
             Positioned(
               bottom: 20,
@@ -248,7 +291,6 @@ class _MapScreenState extends State<MapScreen> {
                               fontWeight: FontWeight.bold,
                             ),
                           ),
-                          // Eğer en iyi öneriyse bir etiket göster
                           if (_selectedPark!['park_id'].toString() ==
                               _recommendedParkId)
                             const Chip(
@@ -295,7 +337,7 @@ class _MapScreenState extends State<MapScreen> {
                             child: ElevatedButton.icon(
                               onPressed: () => _launchExternalMap(),
                               icon: const Icon(Icons.navigation),
-                              label: const Text("Navigasyon"),
+                              label: const Text("Git"),
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: Colors.blue,
                                 foregroundColor: Colors.white,
