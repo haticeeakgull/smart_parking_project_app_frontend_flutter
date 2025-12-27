@@ -6,7 +6,8 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'auth_screen.dart'; // Oluşturduğumuz giriş ekranı dosyası
+import 'auth_screen.dart';
+import "favorites_screen.dart";
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -198,7 +199,7 @@ class _MapScreenState extends State<MapScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      // 🚀 GÜNCELLENEN APPBAR: Çıkış butonu burada
+      // 1. APPBAR: Sadece başlık ve butonları içerir
       appBar: AppBar(
         title: Text(
           _isNavigationMode ? "Otopark Seçimi" : "Akıllı Otopark Asistanı",
@@ -214,15 +215,51 @@ class _MapScreenState extends State<MapScreen> {
                 icon: const Icon(Icons.close, color: Color(0xFF0D47A1)),
                 onPressed: _backToMainMap,
               )
-            : const Icon(Icons.map, color: Color(0xFF0D47A1)),
+            : Builder(
+                // Drawer'ı açmak için Builder ekledik
+                builder: (context) => IconButton(
+                  icon: const Icon(Icons.menu, color: Color(0xFF0D47A1)),
+                  onPressed: () => Scaffold.of(context).openDrawer(),
+                ),
+              ),
         actions: [
           IconButton(
             icon: const Icon(Icons.logout, color: Color(0xFF0D47A1)),
-            onPressed:
-                _showLogoutDialog, // 🚀 Hazırladığın onay kutusunu çağırır
+            onPressed: _showLogoutDialog,
           ),
         ],
       ),
+
+      // 2. DRAWER: AppBar'ın içinde değil, doğrudan Scaffold'un içindedir!
+      drawer: Drawer(
+        child: ListView(
+          padding: EdgeInsets.zero,
+          children: [
+            const DrawerHeader(
+              decoration: BoxDecoration(color: Color(0xFF0D47A1)),
+              child: Text(
+                "ParkAsistan",
+                style: TextStyle(color: Colors.white, fontSize: 24),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.favorite, color: Colors.red),
+              title: const Text("Favorilerim"),
+              onTap: () {
+                Navigator.pop(context); // Menüyü kapat
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const FavoritesScreen(),
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+
+      // 3. BODY: Harita ve diğer görsel elemanlar
       body: Stack(
         children: [
           GoogleMap(
@@ -237,7 +274,7 @@ class _MapScreenState extends State<MapScreen> {
             myLocationButtonEnabled: false,
           ),
 
-          // Slider Alanı
+          // Slider Alanı (Yürüme Mesafesi)
           Positioned(
             top: 15,
             left: 15,
@@ -276,6 +313,7 @@ class _MapScreenState extends State<MapScreen> {
             ),
           ),
 
+          // Seçili Otopark Detay Kartı
           if (_selectedPark != null)
             Positioned(
               bottom: 20,
@@ -291,12 +329,45 @@ class _MapScreenState extends State<MapScreen> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Text(
-                        "Otopark: ${_selectedPark!['park_id']}",
-                        style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            "Otopark: ${_selectedPark!['park_id']}",
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(
+                              Icons.favorite_border,
+                              color: Colors.red,
+                            ),
+                            onPressed: () async {
+                              final user = FirebaseAuth.instance.currentUser;
+                              if (user != null) {
+                                await FirebaseFirestore.instance
+                                    .collection('users')
+                                    .doc(user.uid)
+                                    .collection('favorites')
+                                    .doc(_selectedPark!['park_id'].toString())
+                                    .set({
+                                      'park_id': _selectedPark!['park_id'],
+                                      'occupancy_ratio':
+                                          _selectedPark!['occupancy_ratio'],
+                                      'latitude': _selectedPark!['latitude'],
+                                      'longitude': _selectedPark!['longitude'],
+                                    });
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text("Favorilere eklendi!"),
+                                  ),
+                                );
+                              }
+                            },
+                          ),
+                        ],
                       ),
                       const Divider(),
                       Row(
