@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'api_service.dart'; // ApiService dosyanın adıyla eşleşmeli
+import 'api_service.dart';
 import 'dart:async';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -30,12 +30,11 @@ class MyApp extends StatelessWidget {
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF0D47A1)),
       ),
-      home: const AuthCheck(), // Uygulama giriş kontrolü ile başlar
+      home: const AuthCheck(),
     );
   }
 }
 
-// 🛡️ GİRİŞ KONTROLÜ: Kullanıcı login mi değil mi bakar
 class AuthCheck extends StatelessWidget {
   const AuthCheck({super.key});
 
@@ -49,7 +48,6 @@ class AuthCheck extends StatelessWidget {
             body: Center(child: CircularProgressIndicator()),
           );
         }
-        // Kullanıcı giriş yapmışsa Harita, yapmamışsa Login ekranı
         if (snapshot.hasData) {
           return const MapScreen();
         }
@@ -79,6 +77,9 @@ class _MapScreenState extends State<MapScreen> {
   String? _recommendedParkId;
   int _maxWalkTime = 10;
 
+  // 🛡️ FATURA KORUMASI İÇİN DEĞİŞKENLER
+  LatLng? _pendingTarget;
+
   final LatLng _initialTarget = const LatLng(38.729062, -9.145312);
 
   @override
@@ -101,15 +102,68 @@ class _MapScreenState extends State<MapScreen> {
     });
   }
 
-  void _onMarkerTap(String parkId) {
-    if (_allCandidates.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text("Lütfen önce haritadan bir varış noktası seçin."),
+  // 🛡️ HARİTAYA TIKLANDIĞINDA SADECE HEDEF BELİRLER (BEDAVA)
+  void _onMapTap(LatLng position) {
+    setState(() {
+      _pendingTarget = position;
+      _selectedPark = null; // Eski seçimi temizle
+
+      // Sadece "Hedef" işaretini güncelle
+      _markers.removeWhere((m) => m.markerId.value == "destination");
+      _markers.add(
+        Marker(
+          markerId: const MarkerId("destination"),
+          position: position,
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+          infoWindow: const InfoWindow(title: "Varış Noktası"),
         ),
       );
-      return;
+    });
+    _moveCamera(position, 14.5);
+  }
+
+  // 🛡️ ASIL API İSTEĞİ (SADECE BUTONA BASINCA)
+  void _searchParking() async {
+    if (_pendingTarget == null) return;
+
+    setState(() => _isLoading = true);
+
+    // Sabit kullanıcı konumu (Gerçek cihazda konum servisinden alınmalı)
+    const LatLng userLocation = LatLng(38.722282, -9.135389);
+
+    final result = await _apiService.getSmartRecommendation(
+      _pendingTarget!,
+      userLocation,
+      _maxWalkTime,
+    );
+
+    setState(() => _isLoading = false);
+
+    if (result != null && result['recommended_parking'] != null) {
+      setState(() {
+        _allCandidates = result['all_parkings'];
+        _selectedPark = result['recommended_parking'];
+        _recommendedParkId = _selectedPark!['park_id'].toString();
+        _isNavigationMode = true;
+        _pendingTarget = null; // Butonu gizle
+      });
+      _refreshMarkers();
+      _moveCamera(
+        LatLng(_selectedPark!['latitude'], _selectedPark!['longitude']),
+        15.5,
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("Bu yakınlarda uygun otopark bulunamadı."),
+        ),
+      );
     }
+  }
+
+  void _onMarkerTap(String parkId) {
+    if (_allCandidates.isEmpty) return;
+
     final clickedPark = _allCandidates.firstWhere(
       (p) => p['park_id'].toString() == parkId,
       orElse: () => null,
@@ -123,7 +177,7 @@ class _MapScreenState extends State<MapScreen> {
       _refreshMarkers();
       _moveCamera(
         LatLng(clickedPark['latitude'], clickedPark['longitude']),
-        15,
+        16,
       );
     }
   }
@@ -134,6 +188,7 @@ class _MapScreenState extends State<MapScreen> {
       _selectedPark = null;
       _recommendedParkId = null;
       _allCandidates = [];
+      _pendingTarget = null;
       _markers.removeWhere((m) => m.markerId.value == "destination");
     });
     _refreshMarkers();
@@ -142,6 +197,8 @@ class _MapScreenState extends State<MapScreen> {
 
   void _refreshMarkers() {
     final Set<Marker> newMarkers = {};
+
+    // Hedef marker'ı koru
     if (_markers.any((m) => m.markerId.value == "destination")) {
       newMarkers.add(
         _markers.firstWhere((m) => m.markerId.value == "destination"),
@@ -172,37 +229,12 @@ class _MapScreenState extends State<MapScreen> {
     controller.animateCamera(CameraUpdate.newLatLngZoom(pos, zoom));
   }
 
-  void _onMapTap(LatLng position) async {
-    setState(() => _isLoading = true);
-    final result = await _apiService.getSmartRecommendation(
-      position,
-      const LatLng(38.722282, -9.135389),
-      _maxWalkTime,
-    );
-    setState(() => _isLoading = false);
-
-    if (result != null && result['recommended_parking'] != null) {
-      setState(() {
-        _allCandidates = result['all_parkings'];
-        _selectedPark = result['recommended_parking'];
-        _recommendedParkId = _selectedPark!['park_id'].toString();
-        _isNavigationMode = true;
-      });
-      _refreshMarkers();
-      _moveCamera(
-        LatLng(_selectedPark!['latitude'], _selectedPark!['longitude']),
-        15,
-      );
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      // 1. APPBAR: Sadece başlık ve butonları içerir
       appBar: AppBar(
         title: Text(
-          _isNavigationMode ? "Otopark Seçimi" : "Akıllı Otopark Asistanı",
+          _isNavigationMode ? "Otopark Seçimi" : "ParkAsistan",
           style: const TextStyle(
             color: Color(0xFF0D47A1),
             fontWeight: FontWeight.bold,
@@ -216,7 +248,6 @@ class _MapScreenState extends State<MapScreen> {
                 onPressed: _backToMainMap,
               )
             : Builder(
-                // Drawer'ı açmak için Builder ekledik
                 builder: (context) => IconButton(
                   icon: const Icon(Icons.menu, color: Color(0xFF0D47A1)),
                   onPressed: () => Scaffold.of(context).openDrawer(),
@@ -229,8 +260,6 @@ class _MapScreenState extends State<MapScreen> {
           ),
         ],
       ),
-
-      // 2. DRAWER: AppBar'ın içinde değil, doğrudan Scaffold'un içindedir!
       drawer: Drawer(
         child: ListView(
           padding: EdgeInsets.zero,
@@ -246,7 +275,7 @@ class _MapScreenState extends State<MapScreen> {
               leading: const Icon(Icons.favorite, color: Colors.red),
               title: const Text("Favorilerim"),
               onTap: () {
-                Navigator.pop(context); // Menüyü kapat
+                Navigator.pop(context);
                 Navigator.push(
                   context,
                   MaterialPageRoute(
@@ -258,8 +287,6 @@ class _MapScreenState extends State<MapScreen> {
           ],
         ),
       ),
-
-      // 3. BODY: Harita ve diğer görsel elemanlar
       body: Stack(
         children: [
           GoogleMap(
@@ -274,7 +301,32 @@ class _MapScreenState extends State<MapScreen> {
             myLocationButtonEnabled: false,
           ),
 
-          // Slider Alanı (Yürüme Mesafesi)
+          // 🛡️ FATURA DOSTU: "BURADA ARA" BUTONU
+          if (_pendingTarget != null && !_isLoading)
+            Positioned(
+              bottom: 120,
+              left: 50,
+              right: 50,
+              child: ElevatedButton.icon(
+                onPressed: _searchParking,
+                icon: const Icon(Icons.search),
+                label: const Text(
+                  "Burada Otopark Ara",
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.green.shade700,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 15),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(30),
+                  ),
+                  elevation: 10,
+                ),
+              ),
+            ),
+
+          // Yürüme Mesafesi Slider
           Positioned(
             top: 15,
             left: 15,
@@ -313,7 +365,7 @@ class _MapScreenState extends State<MapScreen> {
             ),
           ),
 
-          // Seçili Otopark Detay Kartı
+          // Otopark Detay Kartı
           if (_selectedPark != null)
             Positioned(
               bottom: 20,
@@ -425,34 +477,23 @@ class _MapScreenState extends State<MapScreen> {
   void _showLogoutDialog() {
     showDialog(
       context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(15),
+      builder: (context) => AlertDialog(
+        title: const Text("Çıkış Yap"),
+        content: const Text("Emin misiniz?"),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("Vazgeç"),
           ),
-          title: const Text("Çıkış Yap"),
-          content: const Text(
-            "Hesabınızdan çıkış yapmak istediğinize emin misiniz?",
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              await FirebaseAuth.instance.signOut();
+            },
+            child: const Text("Çıkış"),
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context), // Pencereyi kapatır
-              child: const Text("Vazgeç", style: TextStyle(color: Colors.grey)),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                Navigator.pop(context); // Pencereyi kapat
-                await FirebaseAuth.instance.signOut(); // Çıkış yap
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF0D47A1),
-                foregroundColor: Colors.white,
-              ),
-              child: const Text("Çıkış Yap"),
-            ),
-          ],
-        );
-      },
+        ],
+      ),
     );
   }
 }
