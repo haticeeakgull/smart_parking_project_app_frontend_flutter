@@ -176,29 +176,28 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
           ),
           Slider(
             value: _predictionMinutes.toDouble(),
-            min: 5,
-            max: 240,
-            divisions: 4,
-            onChanged: (v) => setState(
-              () => _predictionMinutes = v.toInt(),
-            ), // Sadece sayı güncellenir (İstek yok)
-            onChangeEnd: (v) =>
-                _fetchPredictions(), // 🛡️ Sadece parmağını çekince 1 kez istek atar
+            min: 0, // 0'dan başlatmak "Şu anki durum"u da görmeni sağlar
+            max: 300, // 5 saate kadar tahmin
+            divisions: 10, // (300 - 0) / 30 = 10 adım (Her adım tam 30 dk olur)
+            activeColor: const Color(0xFF0D47A1), // AppBar rengiyle uyum
+            onChanged: (v) {
+              setState(() {
+                _predictionMinutes = v.toInt();
+              });
+            },
+            onChangeEnd: (v) => _fetchPredictions(),
           ),
         ],
       ),
     );
   }
 
-  // Card tasarımı ve Rename dialog kısımları aynı kalabilir (Zaten temizler)...
-  // (Kısalık adına o kısımları tekrar eklemedim ama senin kodundaki hali okeydir)
   Widget _buildFavoriteCard(
     Map<String, dynamic> data,
     String docId,
     double occupancy, {
     bool isPredicted = false,
   }) {
-    // Senin mevcut Card kodun...
     return Card(
       child: ListTile(
         title: Text(data['custom_name'] ?? "Otopark"),
