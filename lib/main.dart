@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:smart_parking_project_app/analysis_screen.dart';
 import 'api_service.dart';
 import 'dart:async';
 import 'package:firebase_core/firebase_core.dart';
@@ -8,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'auth_screen.dart';
 import "favorites_screen.dart";
+import "about_screen.dart";
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -234,7 +236,7 @@ class _MapScreenState extends State<MapScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(
-          _isNavigationMode ? "Otopark Seçimi" : "ParkAsistan",
+          _isNavigationMode ? "Otopark Seçimi" : "Park Asistanı",
           style: const TextStyle(
             color: Color(0xFF0D47A1),
             fontWeight: FontWeight.bold,
@@ -271,11 +273,12 @@ class _MapScreenState extends State<MapScreen> {
                 style: TextStyle(color: Colors.white, fontSize: 24),
               ),
             ),
+            // --- FAVORİLER BUTONU ---
             ListTile(
               leading: const Icon(Icons.favorite, color: Colors.red),
               title: const Text("Favorilerim"),
               onTap: () {
-                Navigator.pop(context);
+                Navigator.pop(context); // Menüyü kapat
                 Navigator.push(
                   context,
                   MaterialPageRoute(
@@ -284,9 +287,36 @@ class _MapScreenState extends State<MapScreen> {
                 );
               },
             ),
+            // --- ANALİZ EKRANI BUTONU ---
+            ListTile(
+              leading: const Icon(Icons.bar_chart, color: Colors.blue),
+              title: const Text("Otopark Analizi"),
+              onTap: () {
+                Navigator.pop(context); // Menüyü kapat
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const AnalysisScreen(),
+                  ),
+                );
+              },
+            ),
+            const Divider(),
+            ListTile(
+              leading: const Icon(Icons.info_outline, color: Color(0xFF0D47A1)),
+              title: const Text("Hakkında"),
+              onTap: () {
+                Navigator.pop(context); // Drawer'ı kapat
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const AboutScreen()),
+                );
+              },
+            ),
           ],
         ),
       ),
+
       body: Stack(
         children: [
           GoogleMap(

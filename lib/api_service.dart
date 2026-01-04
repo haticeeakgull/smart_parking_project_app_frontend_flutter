@@ -1,6 +1,8 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
 
 class ApiService {
   final String _baseUrl = 'http://10.0.2.2:8000'; // Emülatör için standart IP
@@ -82,5 +84,20 @@ class ApiService {
       debugPrint("Beklenmedik Hata: $e");
       return null;
     }
+  }
+
+  Future<List<dynamic>?> getOccupancyGraph(String parkId) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$_baseUrl/occupancy-graph/$parkId'),
+      );
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        return data['data'];
+      }
+    } catch (e) {
+      debugPrint("Grafik verisi çekme hatası: $e");
+    }
+    return null;
   }
 }
