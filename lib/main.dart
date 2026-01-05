@@ -79,15 +79,36 @@ class _MapScreenState extends State<MapScreen> {
   String? _recommendedParkId;
   int _maxWalkTime = 10;
 
-  // 🛡️ FATURA KORUMASI İÇİN DEĞİŞKENLER
-  LatLng? _pendingTarget;
+  // Favori durumunu takip etmek için eklenen değişken
+  Set<String> _favoriteParkIds = {};
 
+  LatLng? _pendingTarget;
   final LatLng _initialTarget = const LatLng(38.729062, -9.145312);
 
   @override
   void initState() {
     super.initState();
     _listenToParkingData();
+    _listenToFavorites(); // Favorileri dinlemeyi başlat
+  }
+
+  // Favorileri anlık dinleyen fonksiyon
+  void _listenToFavorites() {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null) {
+      FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .collection('favorites')
+          .snapshots()
+          .listen((snapshot) {
+            if (mounted) {
+              setState(() {
+                _favoriteParkIds = snapshot.docs.map((doc) => doc.id).toSet();
+              });
+            }
+          });
+    }
   }
 
   void _listenToParkingData() {
@@ -104,13 +125,11 @@ class _MapScreenState extends State<MapScreen> {
     });
   }
 
-  // 🛡️ HARİTAYA TIKLANDIĞINDA SADECE HEDEF BELİRLER (BEDAVA)
   void _onMapTap(LatLng position) {
     setState(() {
       _pendingTarget = position;
-      _selectedPark = null; // Eski seçimi temizle
+      _selectedPark = null;
 
-      // Sadece "Hedef" işaretini güncelle
       _markers.removeWhere((m) => m.markerId.value == "destination");
       _markers.add(
         Marker(
@@ -124,15 +143,11 @@ class _MapScreenState extends State<MapScreen> {
     _moveCamera(position, 14.5);
   }
 
-  // 🛡️ ASIL API İSTEĞİ (SADECE BUTONA BASINCA)
   void _searchParking() async {
     if (_pendingTarget == null) return;
-
     setState(() => _isLoading = true);
 
-    // Sabit kullanıcı konumu (Gerçek cihazda konum servisinden alınmalı)
     const LatLng userLocation = LatLng(38.722282, -9.135389);
-
     final result = await _apiService.getSmartRecommendation(
       _pendingTarget!,
       userLocation,
@@ -147,7 +162,7 @@ class _MapScreenState extends State<MapScreen> {
         _selectedPark = result['recommended_parking'];
         _recommendedParkId = _selectedPark!['park_id'].toString();
         _isNavigationMode = true;
-        _pendingTarget = null; // Butonu gizle
+        _pendingTarget = null;
       });
       _refreshMarkers();
       _moveCamera(
@@ -165,12 +180,10 @@ class _MapScreenState extends State<MapScreen> {
 
   void _onMarkerTap(String parkId) {
     if (_allCandidates.isEmpty) return;
-
     final clickedPark = _allCandidates.firstWhere(
       (p) => p['park_id'].toString() == parkId,
       orElse: () => null,
     );
-
     if (clickedPark != null) {
       setState(() {
         _selectedPark = clickedPark;
@@ -199,21 +212,17 @@ class _MapScreenState extends State<MapScreen> {
 
   void _refreshMarkers() {
     final Set<Marker> newMarkers = {};
-
-    // Hedef marker'ı koru
     if (_markers.any((m) => m.markerId.value == "destination")) {
       newMarkers.add(
         _markers.firstWhere((m) => m.markerId.value == "destination"),
       );
     }
-
     _parkingLocations.forEach((id, pos) {
       double hue = BitmapDescriptor.hueBlue;
       if (id == _recommendedParkId) hue = BitmapDescriptor.hueYellow;
       if (_selectedPark != null && id == _selectedPark!['park_id'].toString()) {
         hue = BitmapDescriptor.hueGreen;
       }
-
       newMarkers.add(
         Marker(
           markerId: MarkerId(id),
@@ -273,12 +282,11 @@ class _MapScreenState extends State<MapScreen> {
                 style: TextStyle(color: Colors.white, fontSize: 24),
               ),
             ),
-            // --- FAVORİLER BUTONU ---
             ListTile(
               leading: const Icon(Icons.favorite, color: Colors.red),
               title: const Text("Favorilerim"),
               onTap: () {
-                Navigator.pop(context); // Menüyü kapat
+                Navigator.pop(context);
                 Navigator.push(
                   context,
                   MaterialPageRoute(
@@ -287,12 +295,11 @@ class _MapScreenState extends State<MapScreen> {
                 );
               },
             ),
-            // --- ANALİZ EKRANI BUTONU ---
             ListTile(
               leading: const Icon(Icons.bar_chart, color: Colors.blue),
               title: const Text("Otopark Analizi"),
               onTap: () {
-                Navigator.pop(context); // Menüyü kapat
+                Navigator.pop(context);
                 Navigator.push(
                   context,
                   MaterialPageRoute(
@@ -306,7 +313,7 @@ class _MapScreenState extends State<MapScreen> {
               leading: const Icon(Icons.info_outline, color: Color(0xFF0D47A1)),
               title: const Text("Hakkında"),
               onTap: () {
-                Navigator.pop(context); // Drawer'ı kapat
+                Navigator.pop(context);
                 Navigator.push(
                   context,
                   MaterialPageRoute(builder: (context) => const AboutScreen()),
@@ -316,7 +323,6 @@ class _MapScreenState extends State<MapScreen> {
           ],
         ),
       ),
-
       body: Stack(
         children: [
           GoogleMap(
@@ -330,8 +336,6 @@ class _MapScreenState extends State<MapScreen> {
             zoomControlsEnabled: false,
             myLocationButtonEnabled: false,
           ),
-
-          // 🛡️ FATURA DOSTU: "BURADA ARA" BUTONU
           if (_pendingTarget != null && !_isLoading)
             Positioned(
               bottom: 120,
@@ -355,8 +359,6 @@ class _MapScreenState extends State<MapScreen> {
                 ),
               ),
             ),
-
-          // Yürüme Mesafesi Slider
           Positioned(
             top: 15,
             left: 15,
@@ -394,8 +396,6 @@ class _MapScreenState extends State<MapScreen> {
               ),
             ),
           ),
-
-          // Otopark Detay Kartı
           if (_selectedPark != null)
             Positioned(
               bottom: 20,
@@ -421,31 +421,48 @@ class _MapScreenState extends State<MapScreen> {
                               fontWeight: FontWeight.bold,
                             ),
                           ),
+                          // GÜNCELLENEN FAVORİ BUTONU
                           IconButton(
-                            icon: const Icon(
-                              Icons.favorite_border,
+                            icon: Icon(
+                              _favoriteParkIds.contains(
+                                    _selectedPark!['park_id'].toString(),
+                                  )
+                                  ? Icons.favorite
+                                  : Icons.favorite_border,
                               color: Colors.red,
                             ),
                             onPressed: () async {
                               final user = FirebaseAuth.instance.currentUser;
                               if (user != null) {
-                                await FirebaseFirestore.instance
+                                final parkId = _selectedPark!['park_id']
+                                    .toString();
+                                final docRef = FirebaseFirestore.instance
                                     .collection('users')
                                     .doc(user.uid)
                                     .collection('favorites')
-                                    .doc(_selectedPark!['park_id'].toString())
-                                    .set({
-                                      'park_id': _selectedPark!['park_id'],
-                                      'occupancy_ratio':
-                                          _selectedPark!['occupancy_ratio'],
-                                      'latitude': _selectedPark!['latitude'],
-                                      'longitude': _selectedPark!['longitude'],
-                                    });
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content: Text("Favorilere eklendi!"),
-                                  ),
-                                );
+                                    .doc(parkId);
+
+                                if (_favoriteParkIds.contains(parkId)) {
+                                  await docRef.delete();
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text("Favorilerden çıkarıldı."),
+                                    ),
+                                  );
+                                } else {
+                                  await docRef.set({
+                                    'park_id': _selectedPark!['park_id'],
+                                    'occupancy_ratio':
+                                        _selectedPark!['occupancy_ratio'],
+                                    'latitude': _selectedPark!['latitude'],
+                                    'longitude': _selectedPark!['longitude'],
+                                  });
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text("Favorilere eklendi!"),
+                                    ),
+                                  );
+                                }
                               }
                             },
                           ),

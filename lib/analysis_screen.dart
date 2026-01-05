@@ -104,7 +104,7 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
                     borderSide: BorderSide.none,
                   ),
                 ),
-                value: _selectedParkId,
+                initialValue: _selectedParkId,
                 items: _dynamicParks.isEmpty
                     ? [
                         const DropdownMenuItem(

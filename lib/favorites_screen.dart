@@ -15,54 +15,115 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   int _predictionMinutes = 30;
   bool _isPredicting = false;
   final Map<String, double> _predictedRatios = {};
-
-  // 🔥 DEĞİŞİKLİK: Listenin son halini hafızada tutuyoruz ki API'ye giderken Firestore'u tekrar okumayalım
   List<QueryDocumentSnapshot> _currentFavDocs = [];
 
-  @override
-  void initState() {
-    super.initState();
-    // İlk açılışta Stream'den veri gelmesini bekleyip sonra otomatik tahmin alacağız
-  }
-
-  // 🚀 OPTİMİZE EDİLMİŞ PARALEL TAHMİNLEME
   Future<void> _fetchPredictions() async {
     if (!mounted || _currentFavDocs.isEmpty) return;
-
     setState(() => _isPredicting = true);
-
     try {
-      // 🛡️ OPTİMİZASYON: Tüm istekleri aynı anda (paralel) başlatıyoruz
       final List<Future<void>> predictionTasks = _currentFavDocs.map((
         doc,
       ) async {
         final data = doc.data() as Map<String, dynamic>;
         final String parkId = data['park_id'].toString();
-
         final result = await _apiService.getPrediction(
           parkId,
           _predictionMinutes,
         );
-
         if (result != null && result['predicted_occupancy_ratio'] != null) {
           _predictedRatios[parkId] =
               (result['predicted_occupancy_ratio'] as num).toDouble();
         }
       }).toList();
-
-      await Future.wait(predictionTasks); // Hepsinin bitmesini bekle
-
+      await Future.wait(predictionTasks);
       if (mounted) setState(() => _isPredicting = false);
     } catch (e) {
-      debugPrint("❌ Tahminleme Hatası: $e");
       if (mounted) setState(() => _isPredicting = false);
     }
+  }
+
+  void _editParkingName(String docId, String currentName) {
+    final TextEditingController controller = TextEditingController(
+      text: currentName,
+    );
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Otopark Adını Düzenle"),
+        content: TextField(
+          controller: controller,
+          decoration: const InputDecoration(labelText: "Otopark Takma Adı"),
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("İptal"),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final user = FirebaseAuth.instance.currentUser;
+              if (user != null && controller.text.isNotEmpty) {
+                await FirebaseFirestore.instance
+                    .collection('users')
+                    .doc(user.uid)
+                    .collection('favorites')
+                    .doc(docId)
+                    .update({'custom_name': controller.text});
+                if (mounted) Navigator.pop(context);
+              }
+            },
+            child: const Text("Kaydet"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // FAVORİLERDEN ÇIKARMA FONKSİYONU
+  void _removeFavorite(String docId) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Favorilerden Çıkar"),
+        content: const Text(
+          "Bu otoparkı favorilerinizden silmek istediğinize emin misiniz?",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("Vazgeç"),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () async {
+              final user = FirebaseAuth.instance.currentUser;
+              if (user != null) {
+                await FirebaseFirestore.instance
+                    .collection('users')
+                    .doc(user.uid)
+                    .collection('favorites')
+                    .doc(docId)
+                    .delete();
+                if (mounted) Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text("Favorilerden çıkarıldı.")),
+                );
+              }
+            },
+            child: const Text("Sil"),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
-
     return Scaffold(
       backgroundColor: const Color(0xFFF8F9FE),
       appBar: AppBar(
@@ -106,14 +167,9 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
                   return const Center(
                     child: Text("Henüz favori otoparkınız yok."),
                   );
-
-                // 🛡️ ÖNEMLİ: Mevcut listeyi güncelle (FetchPredictions bunu kullanacak)
                 _currentFavDocs = snapshot.data!.docs;
-
-                // Eğer sayfa yeni açıldıysa ve tahminler boşsa bir kere çek
-                if (_predictedRatios.isEmpty && !_isPredicting) {
+                if (_predictedRatios.isEmpty && !_isPredicting)
                   Future.microtask(() => _fetchPredictions());
-                }
 
                 return ListView.builder(
                   padding: const EdgeInsets.symmetric(
@@ -122,16 +178,15 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
                   ),
                   itemCount: _currentFavDocs.length,
                   itemBuilder: (context, index) {
-                    final data =
-                        _currentFavDocs[index].data() as Map<String, dynamic>;
+                    final doc = _currentFavDocs[index];
+                    final data = doc.data() as Map<String, dynamic>;
                     final String parkId = data['park_id'].toString();
                     double? apiRatio = _predictedRatios[parkId];
                     double firestoreRatio =
                         (data['occupancy_ratio'] as num?)?.toDouble() ?? 0.0;
-
                     return _buildFavoriteCard(
                       data,
-                      _currentFavDocs[index].id,
+                      doc.id,
                       apiRatio ?? firestoreRatio,
                       isPredicted: apiRatio != null,
                     );
@@ -176,15 +231,11 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
           ),
           Slider(
             value: _predictionMinutes.toDouble(),
-            min: 0, // 0'dan başlatmak "Şu anki durum"u da görmeni sağlar
-            max: 300, // 5 saate kadar tahmin
-            divisions: 10, // (300 - 0) / 30 = 10 adım (Her adım tam 30 dk olur)
-            activeColor: const Color(0xFF0D47A1), // AppBar rengiyle uyum
-            onChanged: (v) {
-              setState(() {
-                _predictionMinutes = v.toInt();
-              });
-            },
+            min: 0,
+            max: 300,
+            divisions: 10,
+            activeColor: const Color(0xFF0D47A1),
+            onChanged: (v) => setState(() => _predictionMinutes = v.toInt()),
             onChangeEnd: (v) => _fetchPredictions(),
           ),
         ],
@@ -198,10 +249,53 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
     double occupancy, {
     bool isPredicted = false,
   }) {
+    String displayName = data['custom_name'] ?? "Otopark: ${data['park_id']}";
     return Card(
+      elevation: 2,
+      margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
       child: ListTile(
-        title: Text(data['custom_name'] ?? "Otopark"),
-        trailing: Text("%${(occupancy * 100).toInt()}"),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 20,
+          vertical: 10,
+        ),
+        leading: CircleAvatar(
+          backgroundColor: isPredicted
+              ? Colors.blue.shade100
+              : Colors.grey.shade200,
+          child: Icon(
+            Icons.local_parking,
+            color: isPredicted ? const Color(0xFF0D47A1) : Colors.grey,
+          ),
+        ),
+        title: Text(
+          displayName,
+          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+        ),
+        subtitle: Text(isPredicted ? "Tahmini Doluluk" : "Anlık Doluluk"),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              "%${(occupancy * 100).toInt()}",
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: occupancy > 0.8 ? Colors.red : Colors.green,
+              ),
+            ),
+            const SizedBox(width: 8),
+            IconButton(
+              icon: const Icon(Icons.edit_note, color: Colors.blueGrey),
+              onPressed: () => _editParkingName(docId, displayName),
+            ),
+            // SİLME BUTONU
+            IconButton(
+              icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
+              onPressed: () => _removeFavorite(docId),
+            ),
+          ],
+        ),
       ),
     );
   }
